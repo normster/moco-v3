@@ -10,11 +10,14 @@ import argparse
 import builtins
 import math
 import os
+import pickle
+from PIL import Image, ImageFile
 import random
 import shutil
 import time
 import warnings
 from functools import partial
+import zipfile
 
 import torch
 import torch.nn as nn
@@ -37,90 +40,132 @@ import moco.optimizer
 import vits
 
 
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+
+def yfcc_loader(root, index):
+    index = format(index, "0>8d")
+    repo = index[:2]
+    z = index[2: 5]
+    file_img = index[5:] + '.jpg'
+    path_zip = os.path.join(root, 'images', repo, z) + '.zip'
+    with zipfile.ZipFile(path_zip, 'r') as myzip:
+        img = Image.open(myzip.open(file_img))
+    return img.convert('RGB')
+
+
+
 torchvision_model_names = sorted(name for name in torchvision_models.__dict__
     if name.islower() and not name.startswith("__")
     and callable(torchvision_models.__dict__[name]))
 
 model_names = ['vit_small', 'vit_base', 'vit_conv_small', 'vit_conv_base'] + torchvision_model_names
 
-parser = argparse.ArgumentParser(description='MoCo ImageNet Pre-Training')
-parser.add_argument('data', metavar='DIR',
-                    help='path to dataset')
-parser.add_argument('-a', '--arch', metavar='ARCH', default='resnet50',
-                    choices=model_names,
-                    help='model architecture: ' +
-                        ' | '.join(model_names) +
-                        ' (default: resnet50)')
-parser.add_argument('-j', '--workers', default=32, type=int, metavar='N',
-                    help='number of data loading workers (default: 32)')
-parser.add_argument('--epochs', default=100, type=int, metavar='N',
-                    help='number of total epochs to run')
-parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
-                    help='manual epoch number (useful on restarts)')
-parser.add_argument('-b', '--batch-size', default=4096, type=int,
-                    metavar='N',
-                    help='mini-batch size (default: 4096), this is the total '
-                         'batch size of all GPUs on the current node when '
-                         'using Data Parallel or Distributed Data Parallel')
-parser.add_argument('--lr', '--learning-rate', default=0.6, type=float,
-                    metavar='LR', help='initial (base) learning rate', dest='lr')
-parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
-                    help='momentum')
-parser.add_argument('--wd', '--weight-decay', default=1e-6, type=float,
-                    metavar='W', help='weight decay (default: 1e-6)',
-                    dest='weight_decay')
-parser.add_argument('-p', '--print-freq', default=10, type=int,
-                    metavar='N', help='print frequency (default: 10)')
-parser.add_argument('--resume', default='', type=str, metavar='PATH',
-                    help='path to latest checkpoint (default: none)')
-parser.add_argument('--world-size', default=-1, type=int,
-                    help='number of nodes for distributed training')
-parser.add_argument('--rank', default=-1, type=int,
-                    help='node rank for distributed training')
-parser.add_argument('--dist-url', default='tcp://224.66.41.62:23456', type=str,
-                    help='url used to set up distributed training')
-parser.add_argument('--dist-backend', default='nccl', type=str,
-                    help='distributed backend')
-parser.add_argument('--seed', default=None, type=int,
-                    help='seed for initializing training. ')
-parser.add_argument('--gpu', default=None, type=int,
-                    help='GPU id to use.')
-parser.add_argument('--multiprocessing-distributed', action='store_true',
-                    help='Use multi-processing distributed training to launch '
-                         'N processes per node, which has N GPUs. This is the '
-                         'fastest way to use PyTorch for either single node or '
-                         'multi node data parallel training')
-
-# moco specific configs:
-parser.add_argument('--moco-dim', default=256, type=int,
-                    help='feature dimension (default: 256)')
-parser.add_argument('--moco-mlp-dim', default=4096, type=int,
-                    help='hidden dimension in MLPs (default: 4096)')
-parser.add_argument('--moco-m', default=0.99, type=float,
-                    help='moco momentum of updating momentum encoder (default: 0.99)')
-parser.add_argument('--moco-m-cos', action='store_true',
-                    help='gradually increase moco momentum to 1 with a '
-                         'half-cycle cosine schedule')
-parser.add_argument('--moco-t', default=1.0, type=float,
-                    help='softmax temperature (default: 1.0)')
-
-# vit specific configs:
-parser.add_argument('--stop-grad-conv1', action='store_true',
-                    help='stop-grad after first conv, or patch embedding')
-
-# other upgrades
-parser.add_argument('--optimizer', default='lars', type=str,
-                    choices=['lars', 'adamw'],
-                    help='optimizer used (default: lars)')
-parser.add_argument('--warmup-epochs', default=10, type=int, metavar='N',
-                    help='number of warmup epochs')
-parser.add_argument('--crop-min', default=0.08, type=float,
-                    help='minimum scale for random cropping (default: 0.08)')
+def get_args_parser():
+    parser = argparse.ArgumentParser(description='MoCo ImageNet Pre-Training', add_help=False)
+    parser.add_argument('--root', default='/datasets01/imagenet_full_size/061417', type=str)
+    parser.add_argument('--data', default='yfcc_14m_uncaptioned.pkl', type=str)
+    parser.add_argument('-a', '--arch', metavar='ARCH', default='resnet50',
+                        choices=model_names,
+                        help='model architecture: ' +
+                            ' | '.join(model_names) +
+                            ' (default: resnet50)')
+    parser.add_argument('-j', '--workers', default=32, type=int, metavar='N',
+                        help='number of data loading workers (default: 32)')
+    parser.add_argument('--epochs', default=100, type=int, metavar='N',
+                        help='number of total epochs to run')
+    parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
+                        help='manual epoch number (useful on restarts)')
+    parser.add_argument('-b', '--batch-size', default=4096, type=int,
+                        metavar='N',
+                        help='mini-batch size (default: 4096), this is the total '
+                            'batch size of all GPUs on the current node when '
+                            'using Data Parallel or Distributed Data Parallel')
+    parser.add_argument('--lr', '--learning-rate', default=0.6, type=float,
+                        metavar='LR', help='initial (base) learning rate', dest='lr')
+    parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
+                        help='momentum')
+    parser.add_argument('--wd', '--weight-decay', default=1e-6, type=float,
+                        metavar='W', help='weight decay (default: 1e-6)',
+                        dest='weight_decay')
+    parser.add_argument('-p', '--print-freq', default=10, type=int,
+                        metavar='N', help='print frequency (default: 10)')
+    parser.add_argument('--resume', default='', type=str, metavar='PATH',
+                        help='path to latest checkpoint (default: none)')
+    parser.add_argument('--world-size', default=-1, type=int,
+                        help='number of nodes for distributed training')
+    parser.add_argument('--rank', default=-1, type=int,
+                        help='node rank for distributed training')
+    parser.add_argument('--dist-url', default='tcp://localhost:10001', type=str,
+                        help='url used to set up distributed training')
+    parser.add_argument('--dist-backend', default='nccl', type=str,
+                        help='distributed backend')
+    parser.add_argument('--seed', default=None, type=int,
+                        help='seed for initializing training. ')
+    parser.add_argument('--gpu', default=None, type=int,
+                        help='GPU id to use.')
+    parser.add_argument('--multiprocessing-distributed', action='store_true',
+                        help='Use multi-processing distributed training to launch '
+                            'N processes per node, which has N GPUs. This is the '
+                            'fastest way to use PyTorch for either single node or '
+                            'multi node data parallel training')
+    parser.add_argument('--output-dir', default='./', type=str, help='output dir')
 
 
-def main():
-    args = parser.parse_args()
+    # moco specific configs:
+    parser.add_argument('--moco-dim', default=256, type=int,
+                        help='feature dimension (default: 256)')
+    parser.add_argument('--moco-mlp-dim', default=4096, type=int,
+                        help='hidden dimension in MLPs (default: 4096)')
+    parser.add_argument('--moco-m', default=0.99, type=float,
+                        help='moco momentum of updating momentum encoder (default: 0.99)')
+    parser.add_argument('--moco-m-cos', action='store_true',
+                        help='gradually increase moco momentum to 1 with a '
+                            'half-cycle cosine schedule')
+    parser.add_argument('--moco-t', default=1.0, type=float,
+                        help='softmax temperature (default: 1.0)')
 
+    # vit specific configs:
+    parser.add_argument('--stop-grad-conv1', action='store_true',
+                        help='stop-grad after first conv, or patch embedding')
+
+    # other upgrades
+    parser.add_argument('--optimizer', default='lars', type=str,
+                        choices=['lars', 'adamw'],
+                        help='optimizer used (default: lars)')
+    parser.add_argument('--warmup-epochs', default=10, type=int, metavar='N',
+                        help='number of warmup epochs')
+    parser.add_argument('--crop-min', default=0.08, type=float,
+                        help='minimum scale for random cropping (default: 0.2)')
+
+    return parser
+
+
+class YFCCDataset(torch.utils.data.Dataset):
+    """
+    YFCC dataset for SIMCLR:
+    two views of an uncaptioned image
+    """
+    def __init__(self, root, transform, data='yfcc_14m_uncaptioned.pkl'):
+        self.root = root
+        self.transform = transform
+        cwd = os.path.dirname(os.path.realpath(__file__))
+        with open(os.path.join(cwd, data), 'rb') as f:
+            samples = pickle.load(f)
+        self.samples = samples
+
+    def __getitem__(self, i):
+        index = self.samples[i]
+        img = yfcc_loader(self.root, index)
+        img = self.transform(img)
+
+        return img, 0
+
+    def __len__(self):
+        return len(self.samples)
+
+
+def main(args):
     if args.seed is not None:
         random.seed(args.seed)
         torch.manual_seed(args.seed)
@@ -254,11 +299,11 @@ def main_worker(gpu, ngpus_per_node, args):
     cudnn.benchmark = True
 
     # Data loading code
-    traindir = os.path.join(args.data, 'train')
+    traindir = os.path.join(args.root, 'train')
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
 
-    # follow BYOL's augmentation recipe: https://arxiv.org/abs/2006.07733
+    # follow BYOL's augmentation: https://arxiv.org/abs/2006.07733
     augmentation1 = [
         transforms.RandomResizedCrop(224, scale=(args.crop_min, 1.)),
         transforms.RandomApply([
@@ -289,6 +334,12 @@ def main_worker(gpu, ngpus_per_node, args):
         moco.loader.TwoCropsTransform(transforms.Compose(augmentation1), 
                                       transforms.Compose(augmentation2)))
 
+    # train_dataset = YFCCDataset(
+    #     args.root,
+    #     moco.loader.TwoCropsTransform(transforms.Compose(augmentation1),
+    #                                   transforms.Compose(augmentation2)),
+    #     args.data)
+
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
     else:
@@ -305,7 +356,7 @@ def main_worker(gpu, ngpus_per_node, args):
         # train for one epoch
         train(train_loader, model, optimizer, scaler, summary_writer, epoch, args)
 
-        if not args.multiprocessing_distributed or (args.multiprocessing_distributed
+        if not args.distributed or (args.distributed
                 and args.rank == 0): # only the first GPU saves checkpoint
             save_checkpoint({
                 'epoch': epoch + 1,
@@ -313,7 +364,7 @@ def main_worker(gpu, ngpus_per_node, args):
                 'state_dict': model.state_dict(),
                 'optimizer' : optimizer.state_dict(),
                 'scaler': scaler.state_dict(),
-            }, is_best=False, filename='checkpoint_%04d.pth.tar' % epoch)
+            }, is_best=False, output_dir=args.ouptut_dir)
 
     if args.rank == 0:
         summary_writer.close()
@@ -370,10 +421,11 @@ def train(train_loader, model, optimizer, scaler, summary_writer, epoch, args):
             progress.display(i)
 
 
-def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
-    torch.save(state, filename)
+def save_checkpoint(state, is_best, output_dir, filename='checkpoint.pth.tar'):
+    torch.save(state, os.path.join(output_dir, filename))
     if is_best:
-        shutil.copyfile(filename, 'model_best.pth.tar')
+        shutil.copyfile(os.path.join(output_dir, filename),
+            os.path.join(output_dir, 'model_best.pth.tar'))
 
 
 class AverageMeter(object):
@@ -435,4 +487,6 @@ def adjust_moco_momentum(epoch, args):
 
 
 if __name__ == '__main__':
-    main()
+    args = get_args_parser().parse_args()
+    os.makedirs(args.output_dir, exist_ok=True)
+    main(args)
