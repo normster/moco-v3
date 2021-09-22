@@ -37,9 +37,8 @@ torchvision_model_names = sorted(name for name in torchvision_models.__dict__
 model_names = ['vit_small', 'vit_base', 'vit_conv_small', 'vit_conv_base'] + torchvision_model_names
 
 def get_args_parser():
-    parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
-    parser.add_argument('data', metavar='DIR',
-                        help='path to dataset')
+    parser = argparse.ArgumentParser(description='PyTorch ImageNet Training', add_help=False)
+    parser.add_argument('--data', default='/datasets01/imagenet_full_size/061417/', type=str)
     parser.add_argument('-a', '--arch', metavar='ARCH', default='resnet50',
                         choices=model_names,
                         help='model architecture: ' +

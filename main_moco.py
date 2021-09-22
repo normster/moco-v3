@@ -83,6 +83,7 @@ def get_args_parser():
                             'using Data Parallel or Distributed Data Parallel')
     parser.add_argument('--lr', '--learning-rate', default=0.6, type=float,
                         metavar='LR', help='initial (base) learning rate', dest='lr')
+    parser.add_argument('--betas', default=(0.9, 0.999), nargs=2, type=float)
     parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
                         help='momentum')
     parser.add_argument('--wd', '--weight-decay', default=1e-6, type=float,
@@ -272,6 +273,7 @@ def main_worker(gpu, ngpus_per_node, args):
                                         momentum=args.momentum)
     elif args.optimizer == 'adamw':
         optimizer = torch.optim.AdamW(model.parameters(), args.lr,
+                                betas=args.betas,
                                 weight_decay=args.weight_decay)
         
     scaler = torch.cuda.amp.GradScaler()
@@ -329,16 +331,17 @@ def main_worker(gpu, ngpus_per_node, args):
         normalize
     ]
 
-    train_dataset = datasets.ImageFolder(
-        traindir,
-        moco.loader.TwoCropsTransform(transforms.Compose(augmentation1), 
-                                      transforms.Compose(augmentation2)))
-
-    # train_dataset = YFCCDataset(
-    #     args.root,
-    #     moco.loader.TwoCropsTransform(transforms.Compose(augmentation1),
-    #                                   transforms.Compose(augmentation2)),
-    #     args.data)
+    if 'yfcc' in args.root:
+        train_dataset = YFCCDataset(
+            args.root,
+            moco.loader.TwoCropsTransform(transforms.Compose(augmentation1),
+                                          transforms.Compose(augmentation2)),
+                                          args.data)
+    else:
+        train_dataset = datasets.ImageFolder(
+            traindir,
+            moco.loader.TwoCropsTransform(transforms.Compose(augmentation1), 
+                                          transforms.Compose(augmentation2)))
 
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
